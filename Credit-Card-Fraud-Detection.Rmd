@@ -1,0 +1,973 @@
+---
+title: "Predicting Credit Card Fraud"
+author: "Jose Mijangos, Fernando Madrigal, Brittany Arnold"
+date: "May 5, 2018"
+output: html_document
+---
+
+```{r global_options, include=FALSE}
+knitr::opts_chunk$set(prompt=TRUE, comment="", echo=TRUE)
+```
+
+```{r collapse=TRUE, warning=FALSE, message=FALSE}
+set.seed(123)
+library(cluster)
+library(rpart)
+library(rpart.plot)
+library(maptree)
+library(e1071)
+library(scatterplot3d)
+library(ggplot2)
+library(ggfortify)
+library(gridExtra)
+library(randomForest)
+```
+
+## Introduction
+Now a days, owning a credit card is practically a necessity. Having a direct line of credit opens many doors of opportunity for those who do not make a surplus of income. However, there are some drawbacks from owning a credit card. Irresponsible and spontaneous use of credit can bankrupt you. Worse yet, you can be charged for purchases that you did not commit. This is known as credit card fraud and is the main focus of this project.
+<br><br>
+Given a credit card transaction, we want to predict with the best possible accuracy whether or not that transaction is credit card fraud based on that transaction's features. We also want to predict so that transactions that are fraud are more likley to be detected.
+<br><br>
+In order to achieve this goal we compare the accuracy rate of several classification models. Once we finish testing we will select the model with the best accuracy rate as the best method for predicting credit card fraud. To be sure that each model's accuracy rate is reliable and the best it can be, we will use cross validation and forward selection. Let us get a better understanding of the data before we get to training and testing.
+
+## Reading and Preprocessing
+The data set we will be working with contains 1000 observations and 20 features. There are 7 numeric features (credit_usage, current_balance, location, residence_since, cc_age, existing_credits, num_dependents) and 13 categorical features (over_draft, credit_history, purpose, average_credit_balance, employment, personal_status, other_parties, property_magnitude, other_payment_plans, housing, job, own_telephone, foreign_worker, class). The class feature determines if a transaction is fraud or okay.
+<br><br>
+We extracted the data from this website.
+http://weka.8497.n7.nabble.com/file/n23121/credit_fruad.arff and converted it to a CSV file. The website describes that the data is from the University of Hamburg, Germany and is owned by Dr. Hans Hofmann. Unfortunately there is no information on how or when the data was collected. In this line of code, we store the credit card transaction data in a data frame named dat.
+
+```{r}
+dat = read.csv(".//creditcard.csv")
+```
+
+Some of the labels for the credit history feature were very long. We decided to shorten them. We also removed all the marital status information from the personal status feature. Now personal status only contains the sex of who performed the transaction. Every categorical value in the data set was enclosed in single quotes so we removed all the single quotes. 
+We also converted all the feature names to lowercase for consistency.
+```{r}
+dat$credit_history = as.factor(gsub(" existing credit", "", dat$credit_history))
+dat$credit_history = as.factor(gsub(" previously", "", dat$credit_history))
+dat$personal_status = as.factor(gsub(" .*", "", dat$personal_status))
+dat$class = as.factor(gsub("bad", "fraud", dat$class))
+dat$class = as.factor(gsub("good", "okay", dat$class))
+
+dat$over_draft = as.factor(gsub("'", "", dat$over_draft))
+dat$credit_history = as.factor(gsub("'", "", dat$credit_history))
+dat$purpose = as.factor(gsub("'", "", dat$purpose))
+dat$employment = as.factor(gsub("'", "", dat$employment))
+dat$Average_Credit_Balance = as.factor(gsub("'", "", dat$Average_Credit_Balance))
+dat$personal_status = as.factor(gsub("'", "", dat$personal_status))
+dat$property_magnitude = as.factor(gsub("'", "", dat$property_magnitude))
+dat$housing = as.factor(gsub("'", "", dat$housing))
+dat$job = as.factor(gsub("'", "", dat$job))
+
+names(dat) = tolower(names(dat))
+```
+
+## Missing Data
+This data set does not contain any blank or NA values.
+```{r}
+sum(is.na(dat)) + sum(dat == "")
+```
+
+## Converting the Data Set
+datNum stores a completely numeric version of dat. Some of the models we will test soon require only numeric values. datScale stores a scaled version of datNum.
+```{r}
+datNum =  data.frame(lapply(dat, as.numeric))
+datScale = as.data.frame(apply(datNum, 2, function(x) scale(as.numeric(as.factor(x)))))
+```
+
+## Exploration and Visualization
+### Probability Bar Plots for Okay vs Fraud Transactions
+```{r}
+par(mfrow=(c(2,2)))
+par(mar=c(3,6,2,2))
+
+t = table(dat$class, dat$over_draft)
+t = apply(t, 2, function(x) x/sum(x))
+barplot(t[,c(1,3,2,4)], col = c("red", "green3"), main = "Okay vs Fraud by Overdraft", horiz = TRUE, las = 2)
+
+t = table(dat$class, dat$average_credit_balance)
+t = apply(t, 2, function(x) x/sum(x))
+barplot(t[,c(1,3,4,2)], col = c("red", "green3"), main = "Okay vs Fraud by Average Balance", horiz = TRUE, las = 2)
+
+legend("topright", inset = 0.05, legend=c("fraud", "okay"), fill=c("red", "green3"), lty=1, cex=1.0)
+
+t = table(dat$class, dat$credit_history)
+t = apply(t, 2, function(x) x/sum(x))
+barplot(t[,c(1,4,3,2)], col = c("red", "green3"), main = "Okay vs Fraud by Credit History", horiz = TRUE, las = 2)
+
+t = table(dat$class, dat$personal_status)
+t = apply(t, 2, function(x) x/sum(x))
+barplot(t, col = c("red", "green3"), main = "Okay vs Fraud by Gender", horiz = TRUE, las = 2)
+```
+
+The proportion of okay vs fraud transaction differs significantly for different values within a feature. This shows that the values of a transaction's features is correlated with the probability that the transaction is fraud. Hence we should be able to make good predictions based on a transactions features.
+
+### Double Density Plots for Okay vs Fraud Transactions
+```{r}
+par(mar=c(2,3,3,2))
+par(mfrow=(c(2,2)))
+
+plot(density(dat$credit_usage[dat$class == "fraud"]), main = "Okay vs Fraud by Credit Usage",
+     col = "red", ylim = c(0, 0.06), lwd = 2, xlim = c(0, 55))
+lines(density(dat$credit_usage[dat$class == "okay"]), col = "green3", lwd = 2)
+
+plot(density(rnorm(1000000, mean = mean(dat$credit_usage[dat$class == "fraud"]), sd = sd(dat$credit_usage[dat$class == "fraud"]))), xlim = c(0,55), ylim = c(0, 0.044), col = "red", lwd = 2, main = "Normal Density\nOkay vs Fraud by Credit Usage")
+lines(density(rnorm(1000000, mean = mean(dat$credit_usage[dat$class == "okay"]), sd = sd(dat$credit_usage[dat$class == "okay"]))), col = "green3", lwd = 2)
+legend("topright", inset = 0.05, legend=c("fraud", "okay"),
+       fill=c("red", "green3"), lty=1, cex=1.0)
+
+plot(density(dat$current_balance[dat$class == "fraud"]), main = "Okay vs Fraud by Current Balance",
+     col = "red", ylim = c(0, 0.00037), lwd = 2, xlim = c(-2500, 15000))
+lines(density(dat$current_balance[dat$class == "okay"]), col = "green3", lwd = 2)
+
+plot(density(rnorm(1000000, mean = mean(dat$current_balance[dat$class == "fraud"]), sd = sd(dat$current_balance[dat$class == "fraud"]))), ylim = c(0, 0.000195), col = "red", lwd = 2, main = "Normal Density\nOkay vs Fraud by Current Balance", xlim = c(-2500, 15000))
+lines(density(rnorm(1000000, mean = mean(dat$current_balance[dat$class == "okay"]), sd = sd(dat$current_balance[dat$class == "okay"]))), col = "green3", lwd = 2) 
+ 
+```
+
+The left shows the raw density of a feature and the right shows the normal density of the same feature. The normal densities represent the raw densities very well and are much easier to interpret. By looking at how much a curve is above the other, we can tell if a value is more likely associated with credit card fraud or not associated with credit card fraud.
+
+##Anomaly Detection
+Now that we have convinced ourselves that the features of a transaction are associated with whether or not that transaction is credit card fraud, let us see if being anomalous has anything to do with credit card fraud.
+<br><br>
+We wrote the following functions to help us detect anomalies. The k parameter determines which neighbor to use for comparing distance and the n parameter determines how many anomalies to return.
+```{r}
+#calculates the euclidean distances between two lists of points
+distances_between = function(x, y) {
+  m = as.numeric(nrow(x))
+  n = as.numeric(nrow(y))
+  z = dist(rbind(x, y))
+  matrix = data.frame(V1 = c(1:m))
+  count = 0
+  col = 1;
+  for(i in m:(m+n-1)){
+    v=c()
+    num = 0
+    for(j in (m+n-2):(n)){
+      v=c(v, i+num)
+      num = num + j
+    }
+    v = c(v, i + num)
+    matrix[col] = c(z[v])
+    col = col + 1
+  }
+  return(matrix)
+}
+
+#Finds the n points with the furthest kth neighbor
+detect_anamoly = function(dat, k = 2, n = 5) {
+  m = distances_between(dat, dat)
+  m = apply(m, 1, sort)
+  return(order(-m[k+1,])[1:n])
+}
+```
+
+These are the ten most anomalous transactions with k set to 1.
+```{r}
+dat[detect_anamoly(datNum, k=1, n = 10),c(13,5,2,9,21)]
+```
+
+These are the ten most anomalous transactions with k set to 2.
+```{r}
+dat[detect_anamoly(datNum, k=2, n = 10),c(13,5,2,9,21)]
+```
+
+These are the ten most anomalous transactions with k set to 3.
+```{r}
+dat[detect_anamoly(datNum, k=3, n = 10),c(13,5,2,9,21)]
+```
+
+As expected some transactions appear multiple times for different values of k. Also notice that transactions that were fraud appear more often in the top ten anomalies.
+
+## Cluster Analysis
+Now we will visualize the transactions with scatter plots to compare features for fraud transactions against features for okay transactions. Fraud transactions are plotted with red points and okay transactions are plotted with green. The plots to the left represent the actual color labels for the transactions, and the plots to the right are labeled with two clusters. By observing the plots with actual labels we determined which cluster should represent fraud transactions and which should represent okay transactions.
+<br><br>
+Half the plots were made with unscaled data and the other half with scaled data for better comparison. Also, the clusters were all created with scaled data. First we will show plots with a 3D feature space, then we will show plots with a 2D principal component space.
+
+### Unscaled 3D Feature Space
+```{r}
+set.seed(123)
+par(mfrow=c(1,2))
+par(mar=c(0,0,0,0))
+
+color = c("red", "green3")
+colors = color[as.numeric(dat$class)]
+scatterplot3d(dat[,c("credit_usage", "current_balance", "cc_age")], color=colors, pch=20, main="Credit Usage, Credit Balance, Age\n with Actual Labels")
+
+clust = kmeans(datScale, 2)
+scatterplot3d(dat[,c("credit_usage", "current_balance","cc_age")], color=color[clust$cluster], pch=20, main = "Credit Usage, Credit Balance, Age\n with Two Clusters")
+
+legend("topright", legend=c("fraud", "okay"), fill=c("red", "green3"), lty=1, cex=1.0)
+```
+
+The fraud and okay transactions are very mixed up in the scatter plot with actual lables. However, there does appear to be a greater concentration of okay transactions for lower values of cc_age, credit_usage, and current_balance. While the concentration of fraud transactions  greater for higher values than lower values of these features. In these plots the clusters slightly represent the actual lables.
+
+### Scaled 3D Feature Space
+```{r}
+set.seed(123)
+par(mfrow=c(1,2))
+par(mar=c(0,0,0,0))
+
+scatterplot3d(datScale[,c("credit_usage", "current_balance","cc_age")], color=colors, pch=20, main = "Credit Usage, Credit Balance, Age\n with Class Labels")
+
+clust = kmeans(datScale, 2)
+scatterplot3d(datScale[,c("credit_usage", "current_balance","cc_age")], color=color[clust$cluster], pch=20, main = "Credit Usage, Credit Balance, Age\n with 2 Clusters")
+
+legend("topright", legend=c("fraud", "okay"), fill=c("red", "green3"), lty=1, cex=1.0)
+```
+
+With a scaled feature space the points are much more uniformly spread out, but the clusters do not accurately represent the actual labels. Having only one perspective makes it hard to analyse these 3D plots. Even if we could rotate the plots we could still be missing information because we are using only three out of the twenty transaction features.
+<br><br>
+Plotting with two principal components will fix these issues by showing us a 2D feature space 
+
+### Unscaled 2D Principal Component Space
+```{r collapse=TRUE, warning=FALSE}
+set.seed(123)
+par(mfrow = c(2,2))
+
+pcScaled = prcomp(formula = ~., data=datScale, center = TRUE, scale = TRUE, na.action = na.omit)
+pc = prcomp(formula = ~., data=datNum, center = TRUE, scale = TRUE, na.action = na.omit)
+
+clust = kmeans(datScale, 2)
+color = c("red", "green3")
+
+plot1 = autoplot(prcomp(datNum), data = datNum,  col = c("red","green3")[datNum$class], ylim=c(-0.125,0.05), main = "PCA with Class Labels")
+
+plot2 = autoplot(prcomp(datNum), data = datNum,  col = color[clust$cluster], ylim=c(-0.125,0.05), main = "PCA with Two Clusters")
+
+grid.arrange(plot1, plot2, nrow = 1, ncol=2)
+```
+
+With principal components made with unscaled data, there is a triangular section of green okay transactions. There is some mixture of red fraud transactions within the green triangle and that is even represented by the clusters.
+
+### Scaled 2D Principal Component Space
+```{r collapse=TRUE, warning=FALSE}
+set.seed(123)
+par(mfrow = c(2,2))
+
+clust = kmeans(datScale, 2)
+color = c("red", "green3")
+
+plot1 = autoplot(prcomp(datScale ), data = datScale,  col = c("red","green3")[datNum$class], ylim=c(-0.125,0.05), main = "PCA with Class Labels")
+
+plot2 = autoplot(prcomp(datScale ), data = datScale,  col = color[clust$cluster], ylim=c(-0.125,0.05), main = "PCA with Two Clusters")
+
+grid.arrange(plot1, plot2, nrow = 1, ncol=2)
+```
+
+These principal components were made with scaled data. Again the points are spread out uniformly and the clusters look less representative of the actual labels.
+
+### Cluster vs Actual Attribute Means
+Let us evaluate the clusters by comparing the means of the actual labeled features against the means of the cluster labeled features.
+```{r}
+#Cluster vs Actual Attribute Means
+means = data.frame(Actual_Fraud = apply(datScale[dat$class == "fraud",], 2, function(x) mean(as.numeric(as.factor(x)))), 
+           Fraud_Cluster = apply(datScale[clust$cluster == 1,], 2, function(x) mean(as.numeric(as.factor(x)), rm.na = TRUE)),
+           Actual_Okay = apply(datScale[dat$class == "okay",], 2, function(x) mean(as.numeric(as.factor(x)), rm.na = TRUE)),
+           Okay_Cluster = apply(datScale[clust$cluster == 2,], 2, function(x) mean(as.numeric(as.factor(x)), rm.na = TRUE)))
+
+plot(log10(means[,1]),log10(means[,2]), col = "red", pch = 19, xlab = "Actual Mean", ylab = "Cluster Mean", ylim = c(0,2.5), main = "Cluster vs Actual Means")
+points(log10(means[,3]),log10(means[,4]),col = "green3", pch = 19)
+abline(a=0, b=1, lwd = 1.5)
+legend("bottomright", legend=c("fraud feature", "okay feature"),
+       fill=c("red", "green3"), lty=1, cex=1.0, inset = 0.05)
+```
+
+We scaled the points by log base ten to better represent this plot. The points that intersect with the diagonal line are features that actually were represented well by the clusters. However the majority of the points are not intersecting with the line.
+
+##Testing Classification Methods
+Before we start making our first predictions we should consider what our baseline accuracy rate is.
+```{r}
+paste0(100 * sum(dat$class == "okay")/nrow(dat), ".000%")
+```
+
+We will need a split function to select training and testing data sets.
+```{r}
+split_data = function(dat, frac=c(0.75, 0.25)) {
+  # at least one set must be specified
+  k = length(frac)
+  stopifnot(k > 0)
+  
+  n = nrow(dat)
+  frac = frac/(sum(frac))
+  starts = c(1, round(cumsum(frac) * n)[-k])
+  ends = c(starts[-1]-1,n)
+  samp = sample(1:n)
+  data_sets = list()
+  for (i in 1:k) {
+    data_sets[[i]] = dat[samp[starts[i]:ends[i]],]
+  }
+  return(data_sets)
+} 
+
+  splits = split_data(dat, frac=c(4,1))
+  tr_dat = splits[[1]]
+  te_dat = splits[[2]]
+```
+
+### Predicting with Clusters
+As an experiment, we will try to predict if a transaction is fraud or okay with cluster analysis. For each observation this model will predict its class by choosing the label of the cluster that observation belongs to. Since there are only two classes to classify from, cluster analysis predictions could serve as another lower baseline to compare with the rest of our classification methods.
+<br><br>
+This first model is trained with only the numeric features.
+
+```{r}
+set.seed(123)
+datScale = as.data.frame(apply(datNum, 2, function(x) scale(as.numeric(as.factor(x)))))
+clust = kmeans(datScale[c(2,5,8,11,13,16,18)], 2)
+predictions = c("fraud", "okay")[clust$cluster]
+actuals =  dat$class
+print(paste0("Cluster Accuracy: ", 100 * sum(predictions == actuals) / length(actuals), "00%"))
+conf_mtx = table(actuals, predictions)
+conf_mtx
+paste("Features:",paste(names(dat[c(2,5,8,11,13,16,18)])[-21], collapse = ", "), collapse = " ")
+```
+
+The accuracy is 22.6% lower than the baseline.<br>
+This model predicted fraud for 65.4% of the observations.<br>
+The predictions found 71.33% of the actual frauds.
+<br><br>
+This next model is trained with all the features except class.
+
+```{r}
+set.seed(123)
+datScale = as.data.frame(apply(datNum, 2, function(x) scale(as.numeric(as.factor(x)))))
+clust = kmeans(datScale[-21], 2)
+predictions = c("fraud", "okay")[clust$cluster]
+actuals =  dat$class
+print(paste0("Cluster Accuracy: ", 100 * sum(predictions == actuals) / length(actuals), "00%"))
+conf_mtx = table(actuals, predictions)
+conf_mtx
+paste("Features:",paste(names(dat)[-21], collapse = ", "), collapse = " ")
+```
+
+The accuracy is 17.6% lower than the baseline.<br>
+This model predicted fraud for 48.4% of the observations.<br>
+The predictions found 51.33% of the actual frauds.
+<br><br>
+Overall predicting with clusters is not practical but we were able to use this model to demonstrate the trade off between accuracy and correctly predicting fraud. We will not use cross validation or forwards selection yet, but  we will apply those methods to the rest of the models.
+
+##KNN
+The first machine learning algorithm we will test is KNN. Here is the function we will use to make predictions.
+```{r collapse=TRUE, warning=FALSE}
+set.seed(123)
+
+# returns a knn classifier
+knn_create = function(dat, labels) {
+  return (list(dat=dat, labels=labels))
+}
+
+# returns the mode of a given vector
+vmode = function(x) {
+  return (names(sort(table(x), decreasing = TRUE))[1])
+}
+
+#returns the labels correspond to the k smallest values in a given vector
+smallest_labels = function(x, labels, k) {
+  return (labels[order(x)[1:k]])
+}
+
+# returns the predicted labels of x using a k nearest neighbor classifier
+knn_predict = function(knn, x, k = 5) {
+  matrix = distances_between(knn$dat, x)
+  kNearest = apply(matrix, 2, function(x) smallest_labels(x, knn$labels, k))
+  if(k==1){
+    return(print("Setting k to 1 is not recommended"))
+  }
+  return(apply(kNearest, 2, vmode))
+}
+
+# Using a knn classifier, predict which colleges are private
+KNN = function(tr_dat, te_dat, dependent, features, k) {
+  # labels for training and test data
+  tr_labels = tr_dat[,dependent]
+  te_labels = te_dat[,dependent]
+  
+  # get predictions
+  knn = knn_create(tr_dat, tr_labels)
+  predicts = knn_predict(knn, te_dat, k)
+  
+  return(predicts)
+}
+```
+
+### Cross Validation with KNN
+We use similar cross validation methods for all the other models for reliable accuracy measurements.
+
+```{r collapse=TRUE, warning=FALSE}
+cross_validate_KNN = function (data, dependent, predictors, k){
+  ff = reformulate(predictors, dependent)
+  accuracy = c()
+  actuals = c()
+  predictions = c()
+  for(i in seq(0, nrow(data)-nrow(data)/10,nrow(data)/10)){
+    tr_dat = dat[-(i:(i+nrow(data)/10)),]
+    te_dat = dat[i:(i+nrow(data)/10),]
+    predicted = c("fraud", "okay")[as.numeric(as.factor(KNN(tr_dat, te_dat, dependent, predictors, k)))]
+    actual = te_dat$class
+    actuals = c(actuals,actual)
+    predictions = c(predictions,predicted)
+    accuracy = c(accuracy, mean(actual == predicted))
+  }
+  mean(accuracy)
+}
+```
+
+### Cross Validated Table for KNN
+This function produces a single table to represent the predictions for the entire data set. The table will be used to compare false positive and false negative rates.
+
+```{r}
+cross_validate_KNN_table = function (data, dependent, predictors, k){
+  ff = reformulate(predictors, dependent)
+  accuracy = c()
+  actuals = c()
+  predictions = c()
+  for(i in seq(0, nrow(data)-nrow(data)/10,nrow(data)/10)){
+    tr_dat = dat[-(i:(i+nrow(data)/10)),]
+    te_dat = dat[i:(i+nrow(data)/10),]
+   predicted = c("fraud", "okay")[as.numeric(as.factor(KNN(tr_dat, te_dat, dependent, predictors, k)))]
+    actual = c("fraud", "okay")[te_dat$class]
+    actuals = c(actuals,actual)
+    predictions = c(predictions,predicted)
+    accuracy = c(accuracy, mean(actual == predicted))
+  }
+  return(table(actuals,predictions))
+}
+```
+
+### Best k for KNN
+To maximize the accuracy rate of our KNN model, we start by select k equal to 3. Then we cross validate the accuracy and compare it to the next k's accuracy. If the next k's accuracy is worse we stop and declare the current k as the best k.
+
+```{r collapse=TRUE, warning=FALSE}
+best_k_KNN = function(dat,dependent, features){
+  prevAccuracy = 0
+  best_k = 0
+  for(k in seq(3, nrow(dat), 2)){
+    accuracy = cross_validate_KNN(dat, dependent, features, k)
+    if(accuracy < prevAccuracy){
+      return(best_k)
+    }
+    best_k = k
+    prevAccuracy = accuracy
+  }
+  return(best_k)
+}
+```
+
+### Predicting with KNN and All Features
+```{r collapse=TRUE, warning=FALSE}
+dependent = names(dat)[21]
+all_features = names(dat)[-21]
+k = best_k_KNN(datNum, dependent, names(dat)[-21])
+
+print(paste0("KNN Accuracy: ", floor(100000 * cross_validate_KNN(dat, dependent, all_features[-1], k))/1000,"%"))
+paste0("Best k: ", k)
+cross_validate_KNN_table(dat, dependent, all_features, k)
+paste("Features:",paste(all_features, collapse = ", "), collapse = " ")
+```
+
+The accuracy is 0.325% lower than the baseline.<br>
+This model predicted fraud for 65.4% of the observations.<br>
+The predictions found 71.33% of the actual frauds.
+<br><br>
+Predicting with KNN would not be as accurate as just always predicting the most likely class, but you would find more actual fraud transactions with KNN. The KNN model's performace could be improved by trainng with better features but because KNN takes a lot of time to test, we will not bother using forward selection and move on to our next model.
+
+## Naive Bayes Analysis
+This model makes predictions by estimating the probability that a transaction is fraud based on that transaction's features. We will evaluate this models accuracy and how well it detects fraud transactions. Then we will try to improve the model with forward selection.
+<br><br>
+The following functions were used to select the best features and make reliable accuracy measurements.
+
+### Cross Validation with Naive Bayes
+```{r}
+cross_validate_NB = function (data, dependant, predictors){
+  ff = reformulate(predictors, dependant)
+  accuracy = c()
+  for(i in seq(0, nrow(data)-nrow(data)/10,nrow(data)/10)){
+    tr_dat = dat[-(i:(i+nrow(data)/10)),]
+    te_dat = dat[i:(i+nrow(data)/10),]
+    fit = naiveBayes(ff, data=tr_dat)
+    predicted = c("fraud", "okay")[as.numeric(predict(fit, te_dat, type="class"))]
+    actual = te_dat$class
+    accuracy = c(accuracy, mean(actual == predicted))
+  }
+  mean(accuracy)
+}
+```
+
+### Cross Validated Table for Naive Bayes
+```{r}
+cross_validate_NB_table = function (data, dependant, predictors){
+  ff = reformulate(predictors, dependant)
+  accuracy = c()
+  actuals = c()
+  predictions = c()
+  for(i in seq(0, nrow(data)-nrow(data)/10,nrow(data)/10)){
+    tr_dat = dat[-(i:(i+nrow(data)/10)),]
+    te_dat = dat[i:(i+nrow(data)/10),]
+    fit = naiveBayes(ff, data=tr_dat)
+
+    predicted = c("fraud", "okay")[as.numeric(predict(fit, te_dat, type="class"))]
+    actual = c("fraud", "okay")[te_dat$class]
+    actuals = c(actuals,actual)
+    predictions = c(predictions,predicted)
+    accuracy = c(accuracy, mean(actual == predicted))
+  }
+  return(table(actuals,predictions))
+}
+```
+
+### Forward Selection for Naive Bayes
+```{r}
+forward_selection_NB = function(dat){
+  remaining_features = setdiff(names(dat), c("class"))
+  selected_features = c()
+  prevMax = 0
+  for (i in 1:ncol(dat)) {
+    max = 0
+     for (feature in remaining_features) {
+       accuracy = cross_validate_NB(dat, "class", c(selected_features, feature))
+       if(accuracy > max){
+         max = accuracy
+         best = feature
+       }
+     }
+     if(prevMax > max){
+       return(selected_features)
+     }
+     selected_features = c(selected_features, best)
+     remaining_features = setdiff(remaining_features, selected_features)
+     prevMax = max
+  }
+  return(selected_features)
+}
+```
+
+### Predicting with Naive Bayes and All Features
+```{r}
+features = names(dat)[-21]
+print(paste0("Naive Bayes Accuracy: ", floor(100000 * cross_validate_NB(dat, "class", features))/1000,"%"))
+cross_validate_NB_table(dat, "class", features)
+paste("Features:",paste(features, collapse = ", "), collapse = " ")
+```
+
+The accuracy is 4.831% more than the baseline.<br>
+This model predicted fraud for 24.8% of the observations.<br>
+The predictions found 49.33% of the actual frauds.
+
+### Predicting with Naive Bayes and Selected Features
+```{r}
+features = forward_selection_NB(dat)
+print(paste0("Naive Bayes Accuracy: ", floor(100000 * cross_validate_NB(dat, "class", features))/1000,"%"))
+cross_validate_NB_table(dat, "class", features)
+paste("Features:",paste(features, collapse = ", "), collapse = " ")
+```
+
+The accuracy is 6.717% more than the baseline.<br>
+This model predicted fraud for 22.5% of the observations.<br>
+The predictions found 48.66% of the actual frauds.
+
+Using selected features improves the models accuracy but misclassified fraud transactions slightly more.
+
+### Naive Bayes Learning Curve
+```{r}
+	set.seed(123)
+    ff = reformulate(features, "class")
+  	te_errs = c()
+  	tr_errs = c()
+  	te_actual = te_dat$class
+  	tr_sizes = seq(25, 700, length.out=25)
+  	for (tr_size in tr_sizes) {
+		tr_dat1 = tr_dat[1:tr_size,]
+		tr_actual = tr_dat1$class
+		fit = naiveBayes(ff, data=tr_dat1)
+		# error on training set
+		tr_predicted =  predict(fit, tr_dat1)
+		err = mean(tr_actual != tr_predicted)
+		tr_errs = c(tr_errs, err)
+		# error on test set
+		te_predicted =  predict(fit, te_dat)
+		err = mean(te_actual != te_predicted)
+		te_errs = c(te_errs, err)
+}
+plot(tr_errs ~ tr_sizes, col = "blue", type = "b", xlim = c(25,700), ylim = c(0, 0.5), ylab =     "classification error", xlab = "training set size", main = "Learning Curve for Naive Bayes", lwd=2) 
+points(te_errs ~ tr_sizes, col = "red", type = "b", lwd = 2)
+legend("topright", legend=c("training error rate", "test error rate"),
+   	fill=c("blue", "red"), lty=1, cex=1.0)
+```
+
+As we can see this learning curve, the training and test error rates cross each other. Therefore, this Naive Bayes learning curve classifies as a high bias due to the test error rate dropping quickly.
+
+## Classification Tree Analysis
+Tree models are easy to interpret and can be represented in an intuitive  way. In this section we compare two classification trees. One is trained with all the features and the other is trained with features we considered would be the best for predicting.
+<br><br>
+The following functions were used to select the best features and make reliable measurements
+
+### Cross Validation with Classification Tree
+```{r}
+cross_validate_CT = function (data, dependent, predictors){
+  ff = reformulate(predictors, dependent)
+  accuracy = c()
+  actuals = c()
+  predictions = c()
+  for(i in seq(0, nrow(data)-nrow(data)/10,nrow(data)/10)){
+    tr_dat = dat[-(i:(i+nrow(data)/10)),]
+    te_dat = dat[i:(i+nrow(data)/10),]
+    fit = rpart(ff, data=tr_dat, method="class")
+    predicted = c("fraud", "okay")[as.numeric(predict(fit, te_dat, type="class"))]
+    actual = te_dat$class
+    actuals = c(actuals,actual)
+    predictions = c(predictions,predicted)
+    accuracy = c(accuracy, mean(actual == predicted))
+  }
+  mean(accuracy)
+}
+```
+
+### Cross Validated Table for Classification Tree
+```{r}
+cross_validate_CT_table = function (data, dependent, predictors){
+  ff = reformulate(predictors, dependent)
+  accuracy = c()
+  actuals = c()
+  predictions = c()
+  for(i in seq(0, nrow(data)-nrow(data)/10,nrow(data)/10)){
+    tr_dat = dat[-(i:(i+nrow(data)/10)),]
+    te_dat = dat[i:(i+nrow(data)/10),]
+    fit = rpart(ff, data=tr_dat, method="class")
+    predicted = c("fraud", "okay")[as.numeric(predict(fit, te_dat, type="class"))]
+    actual = c("fraud", "okay")[te_dat$class]
+    actuals = c(actuals,actual)
+    predictions = c(predictions,predicted)
+    accuracy = c(accuracy, mean(actual == predicted))
+  }
+  return(table(actuals,predictions))
+}
+```
+
+### Forward Selection for Classification Tree
+```{r}
+forward_selection_CT = function(dat, dependent){
+  remaining_features = setdiff(names(dat), dependent)
+  selected_features = c()
+  prevMax = 0
+  for (i in 1:ncol(dat)) {
+    max = 0
+     for (feature in remaining_features) {
+       accuracy = cross_validate_CT(dat, dependent, c(selected_features, feature))
+       if(accuracy > max){
+         max = accuracy
+         best = feature
+       }
+     }
+     if(prevMax > max){
+       return(selected_features)
+     }
+     selected_features = c(selected_features, best)
+     remaining_features = setdiff(remaining_features, selected_features)
+     prevMax = max
+  }
+  return(selected_features)
+}
+```
+
+## Classification Tree with All Features
+```{r collapse=TRUE, warning=FALSE}
+  set.seed(123)
+fit = rpart(class ~ ., data=dat, method="class")
+
+prp(fit, extra=106, varlen=-10,
+  main="Classification Tree with All Features",
+  box.col=c("pink", "palegreen")[fit$frame$yval])
+```
+
+This diagram represents our tree model that is trained with all the features. Over_draft is the first feature used to split the observations and the tree has a height of seven levels.
+
+### Predicting with Classification Tree and All Features
+```{r}
+print(paste0("Classification Tree Accuracy: ", floor(100000 * cross_validate_CT(dat, "class", names(dat)[-21]))/1000,"%"))
+cross_validate_CT_table(dat, "class", names(dat)[-21])
+paste("Features:",paste(names(dat)[-21], collapse = ", "), collapse = " ")
+```
+
+The accuracy is 3.546% above the baseline.<br>
+This model predicted fraud for 21.3% of the observations.<br>
+The predictions found 41.33% of the actual frauds.
+
+### Classification Tree with Selective Features
+```{r collapse=TRUE, warning=FALSE}
+  set.seed(123)
+dependent = names(dat)[21]
+  features = forward_selection_CT(dat, dependent)
+  ff = reformulate(features, "class")
+  fit = rpart(ff, data=dat, method="class")
+
+  prp(fit, extra=106, varlen=-10,
+  main="Classification Tree with Selected Features",
+  box.col=c("pink", "palegreen")[fit$frame$yval])
+```
+
+With selective features, this tree also has a height of eight and over_draft is is still used to make the first split. Our classification trees show that over_draft is on of the most deterministic features for predicting credit card fraud.
+
+### Predicting with Classification Tree and Selected Features
+```{r}
+  print(paste0("Classification Tree Accuracy: ", floor(100000 * cross_validate_CT(dat, "class", features))/1000,"%"))
+  cross_validate_CT_table(dat, "class", features)
+  paste("Features:",paste(features, collapse = ", "), collapse = " ")
+```
+
+The accuracy is 6.321% better than the baseline.<br>
+This model predicted fraud for 18.7% of the observations.<br>
+The predictions found 41.67% of the actual frauds.
+<br><br>
+Using selected features only slightly improved our models performance. We plotted a learning curve to diagnose this model.
+
+### Classification Tree Learning Curve
+```{r collapse=TRUE, warning=FALSE}
+  set.seed(123)
+  te_errs = c()
+  tr_errs = c()
+  te_actual = te_dat$class
+  tr_sizes = seq(25, 700, length.out=25)
+  for (tr_size in tr_sizes) {
+    tr_dat1 = tr_dat[1:tr_size,]
+    tr_actual = tr_dat1$class
+    fit = rpart(ff, data=tr_dat1, method="class")
+    # error on training set
+    tr_predicted =  c("fraud", "okay")[as.numeric(predict(fit, tr_dat1, type="class"))]
+    err = mean(tr_actual != tr_predicted)
+    tr_errs = c(tr_errs, err)
+    # error on test set
+    te_predicted =  c("fraud", "okay")[as.numeric(predict(fit, te_dat, type="class"))]
+    err = mean(te_actual != te_predicted)
+    te_errs = c(te_errs, err)
+}
+
+plot(tr_errs ~ tr_sizes, col = "blue", type = "b", xlim = c(25,700), ylim = c(0, 0.5), ylab = "classification error", xlab = "trainig set size", main = "Learning Curve for Classification Tree", lwd=2)
+points(te_errs ~ tr_sizes, col = "red", type = "b", lwd = 2)
+legend("topright", legend=c("training error rate", "test error rate"),
+       fill=c("blue", "red"), lty=1, cex=1.0)
+```
+
+As we can see from this learning curve, both training and test error rate begin apart from one another and then get very close. Therefore, the learning curve shows that this model has high bias.
+
+## Predicting with Random Forest and All Features
+To reduce the bias of our tree model, we predict with random forest. Having over_draft always be the the first split increases the bias. By using random forest, we may find an even predictions that don't depend so much on over_draft.
+
+```{r}
+set.seed(123)
+cross_validate_RF = function (data){
+  accuracy = c()
+  actuals = c()
+  predictions = c()
+  for(i in seq(0, nrow(data)-nrow(data)/10,nrow(data)/10)){
+    tr_dat = dat[-(i:(i+nrow(data)/10)),]
+    te_dat = dat[i:(i+nrow(data)/10),]
+    fit = randomForest(class ~ ., data=tr_dat, method="class")
+    predicted = c("fraud", "okay")[as.numeric(predict(fit, te_dat, type="class"))]
+    actual = te_dat$class
+    actuals = c(actuals,actual)
+    predictions = c(predictions,predicted)
+    accuracy = c(accuracy, mean(actual == predicted))
+  }
+  print(paste0("Random Forest Accuracy: ", floor(100000 * mean(accuracy))/1000,"%"))
+  return(table(c("fraud", "okay")[actuals],predictions))
+}
+
+cross_validate_RF(data = dat)
+```
+
+The accuracy is 7.512% better than the baseline.<br>
+This model predicted fraud for 17.9% of the observations.<br>
+The predictions found 42.33% of the actual frauds.
+
+### Random Forest Learning Curve
+```{r collapse=TRUE, warning=FALSE}
+  set.seed(123)
+  te_errs = c()
+  tr_errs = c()
+  te_actual = te_dat$class
+  tr_sizes = seq(25, 700, length.out=25)
+  for (tr_size in tr_sizes) {
+    tr_dat1 = tr_dat[1:tr_size,]
+    tr_actual = tr_dat1$class
+    fit = randomForest(class ~ ., data=tr_dat1)
+    # error on training set
+    tr_predicted =  predict(fit, tr_dat1)
+    err = mean(tr_actual != tr_predicted)
+    tr_errs = c(tr_errs, err)
+    # error on test set
+    te_predicted =  predict(fit, te_dat)
+    err = mean(te_actual != te_predicted)
+    te_errs = c(te_errs, err)
+}
+
+plot(tr_errs ~ tr_sizes, col = "blue", type = "b", xlim = c(25,700), ylim = c(0, 0.5), ylab = "classification error", xlab = "training set size", main = "Learning Curve for Random Forest", lwd=2)
+points(te_errs ~ tr_sizes, col = "red", type = "b", lwd = 2)
+legend("topright", legend=c("training error rate", "test error rate"),
+       fill=c("blue", "red"), lty=1, cex=1.0)
+```
+
+We used all of the features from our training data to calculate the training and test error rate. As we can see from this learning curve, the training and test error rate are far apart from one another. Therefore, the learning curve shows that it has high variance.
+<br><br>
+Our research shows that trees can be accurate models, but can have high false negative rates. Too many of the actual fraud transactions are being misclassified. So we will now test a model with hyper parameters to reduce the false negative rate.
+
+## Logistic Regression
+The logistic curve is a famous  function that maps any number to a value between zero and one. We will use logistic regression to find balance between accuracy and false  negative rate.
+<br><br>
+The following functions were used to select the best features and make reliable measurements. Also we have have already set the threshold  for this algorithm to be  0.7 which we choose because this value returned the best trade off between accuracy and false negative rate.
+
+### Cross Validation with Logistic  Regression
+```{r}
+cross_validate_LR = function (data, dependent, predictors){
+  ff = reformulate(predictors, dependent)
+  accuracy = c()
+  for(i in seq(0, nrow(data)-nrow(data)/10,nrow(data)/10)){
+    tr_dat = dat[-(i:(i+nrow(data)/10)),]
+    te_dat = dat[i:(i+nrow(data)/10),]
+    fit = glm(ff, family = binomial, data = tr_dat)
+    predicted = c("fraud", "okay")[1 + as.numeric(0.8 < predict(fit, te_dat, type="response"))]
+    actual = te_dat$class
+    accuracy = c(accuracy, mean(actual == predicted))
+  }
+  mean(accuracy)
+}
+```
+
+### Cross Validated Table for Logistic  Regression
+```{r}
+cross_validate_LR_table = function (data, dependent, predictors){
+  ff = reformulate(predictors, dependent)
+  accuracy = c()
+  actuals = c()
+  predictions = c()
+  for(i in seq(0, nrow(data)-nrow(data)/10,nrow(data)/10)){
+    tr_dat = dat[-(i:(i+nrow(data)/10)),]
+    te_dat = dat[i:(i+nrow(data)/10),]
+    fit = glm(ff, family = binomial, data = tr_dat)
+    predicted = c("fraud", "okay")[1 + as.numeric(0.8 < predict(fit, te_dat, type="response"))]
+    actual = c("fraud", "okay")[te_dat$class]
+    actuals = c(actuals,actual)
+    predictions = c(predictions,predicted)
+    accuracy = c(accuracy, mean(actual == predicted))
+  }
+  return(table(actuals,predictions))
+}
+```
+
+### Forward Selection for Logistic Regression
+```{r}
+forward_selection_LR = function(dat){
+  remaining_features = setdiff(names(dat), c("class"))
+  selected_features = c()
+  prevMax = 0
+  for (i in 1:ncol(dat)) {
+    max = 0
+     for (feature in remaining_features) {
+       accuracy = cross_validate_LR(dat, "class", c(selected_features, feature))
+       if(accuracy > max){
+         max = accuracy
+         best = feature
+       }
+     }
+     if(prevMax > max){
+       return(selected_features)
+     }
+     selected_features = c(selected_features, best)
+     remaining_features = setdiff(remaining_features, selected_features)
+     prevMax = max
+  }
+  return(selected_features)
+}
+```
+
+### Predicting with Logistic Regression and All Features
+```{r}
+features = names(dat)[-21]
+print(paste0("Logistic Regression Accuracy: ", floor(100000 * cross_validate_LR(dat, "class", names(dat)[-21]))/1000,"%"))
+cross_validate_LR_table(dat, "class", features)
+paste("Features:",paste(names(dat)[-21], collapse = ", "), collapse = " ")
+```
+
+The accuracy is 2.208% less than the baseline.<br>
+This model predicted fraud for 52.1% of the observations.<br>
+The predictions found 81.33% of the actual frauds.
+
+### Predicting with Logistic Regression and Selected Features
+```{r}
+features = forward_selection_LR(dat)
+print(paste0("Logisitic Regression Accuracy: ", floor(100000 * cross_validate_LR(dat, "class", features))/1000,"%"))
+cross_validate_LR_table(dat, "class", features)
+paste("Features:",paste(features, collapse = ", "), collapse = " ")
+```
+
+The accuracy is 2.215%  less than the baseline.<br>
+This model predicted fraud for 53.3% of the observations.<br>
+The predictions found 85% of the actual frauds.
+
+### Logistic Regression Learning Curve
+```{r}
+	set.seed(123)
+    ff = reformulate(features, "class")
+  	te_errs = c()
+  	tr_errs = c()
+  	te_actual = te_dat$class
+  	tr_sizes = seq(25, 700, length.out=25)
+  	for (tr_size in tr_sizes) {
+		tr_dat1 = tr_dat[1:tr_size,]
+		tr_actual = tr_dat1$class
+		fit = glm(ff, family = binomial, data = tr_dat)
+		# error on training set
+		tr_predicted =   c("fraud", "okay")[1 + as.numeric(0.8 < predict(fit, tr_dat1, type="response"))]
+		err = mean(tr_actual != tr_predicted)
+		tr_errs = c(tr_errs, err)
+		# error on test set
+		te_predicted = c("fraud", "okay")[1 + as.numeric(0.8 < predict(fit, te_dat, type="response"))]
+		err = mean(te_actual != te_predicted)
+		te_errs = c(te_errs, err)
+}
+plot(tr_errs ~ tr_sizes, col = "blue", type = "b", xlim = c(25,700), ylim = c(0, 0.5), ylab =     "classification error", xlab = "training set size", main = "Learning Curve for Logistic Regression", lwd=2) 
+points(te_errs ~ tr_sizes, col = "red", type = "b", lwd = 2)
+legend("topright", legend=c("training error rate", "test error rate"),
+   	fill=c("blue", "red"), lty=1, cex=1.0)
+```
+
+Both the curves flatten out quickly. Because the curves are close to each other we will interpret this as high bias.
+
+##Logistic Regression ROC Curve
+```{r}
+prec_recall_summary = function(predicts, actuals) {
+  thresh = seq(0, 1, length.out=50)
+  prec_rec = data.frame()
+  actuals = factor(as.numeric(actuals))
+  for (th in thresh) {
+    predicts = factor(as.numeric(y >= th), levels=c("0","1"))
+    prec_rec = rbind(prec_rec, as.vector(table(predicts, actuals)))
+  }
+  names(prec_rec) = c("TN", "FP", "FN", "TP")
+  prec_rec$threshold = thresh
+  prec_rec$precision = prec_rec$TP/(prec_rec$TP + prec_rec$FP)
+  prec_rec$recall    = prec_rec$TP/(prec_rec$TP + prec_rec$FN)
+  prec_rec$false_pos = prec_rec$FP/(prec_rec$FP + prec_rec$TN)
+  return(prec_rec)
+}
+
+fit <- glm(class ~ ., family = binomial, data = dat)
+y = predict(fit, newdata=te_dat, type="response")
+predicts = c("fraud", "okay")[1 + as.numeric(y > 0.5)]
+actuals = te_dat$class
+conf_mtx = table(predicts, actuals)
+prec_rec1 = prec_recall_summary(predicts, actuals)
+
+par(mfrow = c(1,1))
+t = prec_rec1$TP/max(prec_rec1$TP)
+f = prec_rec1$FP/max(prec_rec1$FP)
+plot(t ~ f, pch = 20, col = "blue", ylab = "recall", xlab = "threshold", main = "Receiver Operating Characteristic", type="l", lwd = 2)
+```
+
+The ROC curve hugs the top right corner which is good. Adjusting the threshold of the model allows us to detect more fraud transactions at the cost of a little accuracy.
+
+##Conclusion
+The best model ideally  would have low error rate and low false negative rate. With a low false negative rate, less fraud transactions would go undetected. 
+<br><br>
+Trees models were very accurate but would only detect 40% of the 300 fraud transactions in the data set. Naive bayes was also accurate and detected 50% of the fraud transactions. But these models did not have the flexibility needed to detect a majority of the fraud transactions.
+<br><br>
+KNN and logistic regressions were nearly as accurate as the base line and could detect a majority  of the fraud transactions. Logistic regression could predict 85% of the fraud transactions only the loss of 2.215% of the accuracy. So logistic regression will be selected as the best model to detect credit card fraud because of its low false negative rate and accuracy.
